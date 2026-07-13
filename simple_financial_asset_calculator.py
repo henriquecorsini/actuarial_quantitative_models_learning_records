@@ -2,22 +2,6 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-# Como não constavam os valores dos retornos médios e das volatilidades dos
-# ativos 'A', 'B' e 'C' no enunciado, optei por escrever todo o processo dentro
-# de uma única função com o título gerenciador de ativos. Ela foi concebida
-# para que recebesse uma carteira com um número arbitrário de ativos, checando
-# se os retornos médios, as volatidades, a matriz de correlação, etc. tinham o
-# tamanho correto e continham dados numéricos.
-
-# Gostaria de fazer duas observações: mais natural é usar tal função com
-# reserva=0.00 para assim podê-la estimá-la corretamente; ou seja, ao dar
-# entrada num valor de reserva nulo, obtém-se a reserva com o risco desejado.
-# A segunda observação se refere à possibilidade de simular facilmente
-# diferentes proporções dos mesmos ativos. Ou seja, sabendo-se a quantidade
-# total a investir e a reserva, é possível por meio de ajustes melhorar as
-# proporções para maximizar os ganhos, sem fugir da margem de segurança imposta,
-# ou seja, gerenciar os riscos.
-
 def gerenciador_de_ativos(ativos, pesos, retornos_medios, volatilidades, corr,
     valor_inicial, reserva, percentual_seguranca, n_cenarios, seed=123):
 
