@@ -21,7 +21,7 @@ def claim_number_model(rng, lambda_sampler, *, size=(), **sampler_kwargs):
     claims = rng.poisson(lam=lam)
     return claims, lam
 
--- Examples of lambda_sampler.
+# Examples of lambda_sampler.
 
 def lognormal_lambda_sampler(rng, mean, sigma, size=()):
     return rng.lognormal(mean=mean, sigma=sigma, size=size)
@@ -30,7 +30,7 @@ def normal_lambda_sampler(rng, loc, scale, size=()):
     lam = rng.normal(loc=loc, scale=scale, size=size)
     return np.clip(lam, 0.0, None)
 
--- ...
+# ..
 
 def ibnr_claim_count_model(rng, n_occurrence_periods, reporting_pattern, lambda_sampler, *, sampler_kwargs = None):
     
@@ -41,21 +41,41 @@ def ibnr_claim_count_model(rng, n_occurrence_periods, reporting_pattern, lambda_
         raise ValueError("reporting probabilities must lie in [0,1].")
     
     ultimate_counts, lambdas = claim_number_model(rng, lambda_sampler, size=n_occurrence_periods, **sampler_kwargs)
-    reported_incremental = np.zeros((n_occurrence_periods, n_development_periods), dtype=int)
+    
+    # This models the TOTAL amount of claims that occured in each period.
+    # It is now necessary to model when they were reported. This shall be
+    # done using the parameters from reporting_pattern.
+    
+    reported_incremental = np.zeros((n_occurrence_periods, n_occurence_periods), dtype=int)
     remaining = ultimate_counts.copy()
 
     for i in range(0, n_occurrence_periods):
         for j in range(0, n_occurrence_periods - i):
-            if j == n_development_periods - 1:
-                reported_incremental[i,j] = remaining[i]
-            else:
-                reported_incremental[i,j] = rng.binomial(remaining[i], reporting_pattern[j])
-                remaining[i] -= reported_incremental[i,j]
+            reported_incremental[i,j] = rng.binomial(remaining[i], reporting_pattern[j])
+            remaining[i] -= reported_incremental[i,j]
             
     reported_cumulative = reported_incremental.cumsum(axis=1)
     ibnr_by_occurrence = ultimate_counts - reported_cumulative[:,-1]
 
     triangle = pd.DataFrame(
         reported_cumulative,
-        index=[f"AY_{i+1}" for i ]
+        index=[f"AY_{i}" for i in range(0, n_occurrence_periods)],
+        columns = [f"Dev_{j}" for j in range(0, n_occurrence_periods)]
     )
+
+    summary = pd.DataFrame({
+        "occurrence_period": [f"AY_{i}" for i in range(0, n_occurrence_periods)],
+        "lambdas": lambdas,
+        "ultimate_claim_count": ultimate_counts,
+        "reported_to_date": reported_cumulative[:,-1],
+        "ibnr_count": ibnr_by_occurrence
+    })
+
+    total_ibnr = int(ibnr_by_occurrence.sum())
+
+    return {
+        "triangle_cumulative": triangle,
+        "reported_incremental": reported_incremental,
+        "summary": summary,
+        "total_ibnr": total_ibnr
+    }
