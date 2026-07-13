@@ -33,6 +33,8 @@ def normal_lambda_sampler(rng, loc, scale, size=()):
 # ..
 
 def ibnr_claim_count_model(rng, n_occurrence_periods, reporting_pattern, lambda_sampler, *, sampler_kwargs = None):
+
+    # I did not introduce an n_development_periods variable because 
     
     sampler_kwargs = sampler_kwargs or {}
     reporting_pattern = np.asarray(reporting_pattern, dtype=float)
@@ -51,7 +53,10 @@ def ibnr_claim_count_model(rng, n_occurrence_periods, reporting_pattern, lambda_
 
     for i in range(0, n_occurrence_periods):
         for j in range(0, n_occurrence_periods - i):
-            reported_incremental[i,j] = rng.binomial(remaining[i], reporting_pattern[j])
+            if j>=len(report_pattern):
+                reported_incremental[i,j] = rng.binomial(remaining[i], reporting_pattern[-1])
+            else:
+                reported_incremental[i,j] = rng.binomial(remaining[i], reporting_pattern[j])
             remaining[i] -= reported_incremental[i,j]
             
     reported_cumulative = reported_incremental.cumsum(axis=1)
