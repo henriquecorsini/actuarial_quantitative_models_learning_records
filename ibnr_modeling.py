@@ -65,9 +65,10 @@ def ibnr_claim_count_model(rng, n_occurrence_periods, reporting_pattern, lambda_
     for i in range(0, n_occurrence_periods):
         for j in range(0, n_occurrence_periods - i):
             if j>=len(report_pattern):
-                reported_incremental[i,j] = rng.binomial(remaining[i], reporting_pattern[-1])
+                binom_parameter = np.clip(rng.normal(loc=reporting_pattern[-1], scale=0.1*reporting_pattern), 0.0, 1.0)
             else:
-                reported_incremental[i,j] = rng.binomial(remaining[i], reporting_pattern[j])
+                binom_parameter = np.clip(rng.normal(loc=reporting_pattern[j], scale=0.1*reporting_pattern), 0.0, 1.0)
+            reported_incremental[i,j] = rng.binomial(remaining[i], binom_parameter)
             remaining[i] -= reported_incremental[i,j]
             
     reported_cumulative = reported_incremental.cumsum(axis=1)
