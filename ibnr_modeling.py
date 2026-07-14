@@ -45,6 +45,7 @@ def normal_lambda_sampler(rng, loc, scale, size=()):
 # remained unreported, the more likely it is that it should be reported in
 # the near future.
 
+
 def ibnr_claim_count_model(rng, n_occurrence_periods, reporting_pattern, lambda_sampler, *, sampler_kwargs = None):
     
     sampler_kwargs = sampler_kwargs or {}
@@ -59,15 +60,15 @@ def ibnr_claim_count_model(rng, n_occurrence_periods, reporting_pattern, lambda_
     # It is now necessary to model when they were reported. This shall be
     # done using the parameters from reporting_pattern.
     
-    reported_incremental = np.zeros((n_occurrence_periods, n_occurence_periods), dtype=int)
+    reported_incremental = np.zeros((n_occurrence_periods, n_occurrence_periods), dtype=int)
     remaining = ultimate_counts.copy()
 
     for i in range(0, n_occurrence_periods):
         for j in range(0, n_occurrence_periods - i):
-            if j>=len(report_pattern):
-                binom_parameter = np.clip(rng.normal(loc=reporting_pattern[-1], scale=0.1*reporting_pattern), 0.0, 1.0)
+            if j>=len(reporting_pattern):
+                binom_parameter = np.clip(rng.normal(loc=reporting_pattern[-1], scale=0.1*reporting_pattern[-1]), 0.0, 1.0)
             else:
-                binom_parameter = np.clip(rng.normal(loc=reporting_pattern[j], scale=0.1*reporting_pattern), 0.0, 1.0)
+                binom_parameter = np.clip(rng.normal(loc=reporting_pattern[j], scale=0.1*reporting_pattern[j]), 0.0, 1.0)
             reported_incremental[i,j] = rng.binomial(remaining[i], binom_parameter)
             remaining[i] -= reported_incremental[i,j]
             
