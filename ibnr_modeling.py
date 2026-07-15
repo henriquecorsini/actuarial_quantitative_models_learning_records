@@ -97,3 +97,72 @@ def ibnr_claim_count_model(rng, n_occurrence_periods, reporting_pattern, lambda_
         "summary": summary,
         "total_ibnr": total_ibnr
     }
+    
+def fit_exponential_tail_allowing_zeros(temporal_averages, threshold_ratio=0.05):
+    temporal_averages = np.asarray(temporal_averages, dtype=float)
+
+    if temporal_averages.ndim != 1:
+        raise ValueError("temporal_averages must be a 1D array.")
+    if np.any(temporal_averages < 0):
+        raise ValueError("temporal_averages must be non-negative.")
+
+    max_val = temporal_averages.max()
+    threshold = threshold_ratio * max_val
+
+    candidates = np.flatnonzero(temporal_averages < threshold)
+    if len(candidates) == 0:
+        raise ValueError("No index j satisfies the threshold condition.")
+
+    j_tail = candidates[0]
+
+    tail = temporal_averages[j_tail:]
+    x = np.arange(len(tail))
+
+    positive_mask = tail > 0
+    if positive_mask.sum() < 2:
+        raise ValueError("Not enough positive points to fit an exponential.")
+
+    x_fit = x[positive_mask]
+    y_fit = tail[positive_mask]
+
+    slope, intercept = np.polyfit(x_fit, np.log(y_fit), 1)
+
+    if slope>=0:
+        raise ValueError("The fitted exponential tail is not decreasing.")
+
+    a = np.exp(intercept)
+    b = slope
+    fitted_tail = a * np.exp(b * x)
+
+    fitted_temporal_averages = temporal_averages.copy()
+    fitted_temporal_averages[j_tail:] = fitted_tail
+
+    return j_tail, a, b, fitted_temporal_averages
+
+def estimating_ibnr_count_by_smoothed_means(reported_incremental_df, threshold_ratio=0.05):
+    estimated_claim_count = reported_incremental_df.copy()
+    row_amount, col_amount = estimated_claim_count.shape
+
+    temporal_averages = []
+
+    for j in range(col_amount):
+        observed_rows = row_amount - j
+        if observed_rows > 0:
+            temporal_averages.append(
+                estimated_claim_count.iloc[:observed_rows, j].mean()
+            )
+        else:
+            temporal_averages.append(np.nan)
+
+    j_tail, a, b, temporal_averages = fit_exponential_tail_allowing_zeros(
+        temporal_averages, threshold_ratio
+    )
+
+    for j in range(col_amount):
+        observed_rows = row_amount - j
+        if observed_rows < row_amount:
+            estimated_claim_count.iloc[observed_rows:row_amount, j] = temporal_averages[j]
+
+    remaining_estimated_ibnr = a * np.exp(b * (col_amount - j_tail)) / (1 - np.exp(b))
+
+    return estimated_claim_count, remaining_estimated_ibnr
