@@ -2,14 +2,18 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-def gerenciador_de_ativos(ativos, pesos, retornos_medios, volatilidades, corr,
+def toy_model_gerenciador_de_ativos(ativos, pesos, retornos_medios, volatilidades, corr,
     valor_inicial, reserva, percentual_seguranca, n_cenarios, seed=123):
 
     # Checagem de que as entradas são vetores.
-    assert len(ativos.shape) == 1, "A entrada em ativos deve ser um vetor."
-    assert len(pesos.shape) == 1, "A entrada em pesos deve ser um vetor."
-    assert len(retornos_medios.shape) == 1, "A entrada em retornos_medios deve ser um vetor."
-    assert len(volatilidades.shape) == 1, "A entrada em volatilidades deve ser um vetor."
+    if len(ativos.shape) != 1:
+        raise ValueError("A entrada em ativos deve ser um vetor.")
+    if len(pesos.shape) != 1:
+        raise ValueError("A entrada em pesos deve ser um vetor.")
+    if len(retornos_medios.shape) != 1:
+        raise ValueError("A entrada em retornos_medios deve ser um vetor.")
+    if len(volatilidades.shape) != 1:
+        raise ValueError("A entrada em volatilidades deve ser um vetor."
 
     # Checagens de que os valores são numéricos
     # Obs: a checagem de que as entradas da matriz de covariancia normalizada
