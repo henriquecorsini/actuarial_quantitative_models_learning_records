@@ -1,0 +1,563 @@
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+# Lambda sampler functions.
+
+def lognormal_lambda_sampler(
+    rng,
+    mean,
+    sigma,
+    *,
+    size=()
+):
+    return rng.lognormal(mean=mean, sigma=sigma, size=size)
+
+def normal_lambda_sampler(
+    rng,
+    loc,
+    scale,
+    *,
+    size=()
+):
+    lam = rng.normal(loc=loc, scale=scale, size=size)
+    return np.clip(lam, 0.0, None)
+
+# Introducing stochastic elements to the reporting pattern.
+
+def noisy_hazard(
+    rng,
+    base_p,
+    *,
+    rel_scale=0.1,
+    min_scale=0.01
+):
+    scale = max(rel_scale * base_p, min_scale)
+    return np.clip(rng.normal(loc=base_p, scale=scale), 0.0, 1.0)
+
+# Useful function to adjust numeric arrays to correct sizes.
+
+def fix_num_array(
+    num_array,
+    *,
+    size=(),
+    fill_with_last = False,
+    fill_with_mean = False
+):
+    num_array = np.asarray(num_array, dtype=float)
+    if num_array.ndim != 1:
+        raise ValueError("num_array must be a 1D array.")
+    if len(size) == 0:
+        return num_array
+
+    out_length = size[0]
+    if out_length <= len(num_array):
+        return num_array[:out_length]
+
+    if fill_with_last:
+        if fill_with_mean:
+            raise ValueError("You cannot choose to fill missing entries with the last element and the mean at the same time.")
+        modified = np.full(out_length, num_array[-1], dtype=float)
+        modified[:len(num_array)] = num_array
+        return modified
+
+    if fill_with_mean:
+        avg = np.average(num_array)
+        modified = np.full(out_length, avg, dtype=float)
+        modified[:len(num_array)] = num_array
+        return modified
+
+    out = np.zeros(out_length, dtype=float)
+    out[:len(num_array)] = num_array
+    return out
+
+# Model generating the total amount of claim occurring in each period.
+
+def total_claim_number_model(
+    rng,
+    *,
+    lambda_sampler,
+    size=(),
+    **sampler_kwargs
+):
+    lam = np.asarray(
+        lambda_sampler(rng=rng, size=size, **sampler_kwargs),
+        dtype = float
+    )
+    if np.any(lam < 0):
+        raise ValueError("Poisson intensities must be nonnegative.")
+    claims = rng.poisson(lam=lam)
+    return claims
+
+# Function adjusting reporting parameters.
+
+def adj_reporting_parameters(
+    reporting_pattern,
+    *,
+    reporting_pattern_spread=None,
+    spread_fill_with_last=True
+):
+    reporting_pattern = np.asarray(reporting_pattern, dtype=float)
+    if reporting_pattern.ndim != 1:
+        raise ValueError("reporting_pattern must be a 1D array.")
+    if np.any(reporting_pattern < 0) or np.any(reporting_pattern > 1):
+        raise ValueError("reporting probabilities must lie in [0,1].")
+
+    if reporting_pattern_spread is None:
+        reporting_pattern_spread = np.full_like(reporting_pattern, 0.1)
+    else:
+        reporting_pattern_spread = np.asarray(reporting_pattern_spread, dtype=float)
+        if reporting_pattern_spread.ndim != 1:
+            raise ValueError("reporting_pattern_spread must be a 1D array.")
+        if not spread_fill_with_last:
+            if len(reporting_pattern) != len(reporting_pattern_spread):
+                raise ValueError("reporting_pattern_spread must have the same length as reporting_pattern.")
+        else:
+            reporting_pattern_spread = fix_num_array(reporting_pattern_spread, 
+                                                     size=(len(reporting_pattern),),
+                                                     fill_with_last=True)  
+    return reporting_pattern, reporting_pattern_spread
+
+# Model generating a table of reported claims. 
+
+def reported_claims_model(
+    rng,
+    occurrence_periods,
+    *,
+    reporting_pattern,
+    reporting_pattern_spread=None,
+    spread_fill_with_last=True,
+    lambda_sampler,
+    sampler_kwargs = None
+):
+    sampler_kwargs = sampler_kwargs or {}
+
+    reporting_pattern, reporting_pattern_spread = adj_reporting_parameters(
+        reporting_pattern=reporting_pattern,
+        reporting_pattern_spread=reporting_pattern_spread,
+        spread_fill_with_last=spread_fill_with_last
+    )
+
+    ultimate_counts = total_claim_number_model(rng,
+                                               lambda_sampler=lambda_sampler,
+                                               size=occurrence_periods,
+                                               **sampler_kwargs
+    )
+
+    row_amount, col_amount = occurrence_periods, occurrence_periods
+    reported_incremental = np.full((row_amount, col_amount), np.nan)
+    remaining = ultimate_counts.copy()
+
+    for i in range(row_amount):
+        obs_columns = col_amount - i
+        for j in range(obs_columns):
+            if j>=len(reporting_pattern):
+                prob = noisy_hazard(rng,
+                                    reporting_pattern[-1],
+                                    rel_scale=reporting_pattern_spread[-1])
+            else:
+                prob = noisy_hazard(rng,
+                                    reporting_pattern[j],
+                                    rel_scale=reporting_pattern_spread[j])
+            reported_incremental[i,j] = rng.binomial(remaining[i], prob)
+            remaining[i] -= reported_incremental[i,j]
+
+    return ultimate_counts, reported_incremental
+
+# Assume that an array weights is given which describes the relative importance
+# of data with respect to *experience period*. This function extrapolates the
+# remaining entries of the triangular table with weighted averages.
+
+def apply_wgts_triang(
+    triangle,
+    *,
+    weights = None,
+    fill_with_last = False,
+    fill_with_mean = False
+):
+    triangle = np.asarray(triangle, dtype=float, copy=True)
+    if triangle.ndim != 2:
+        raise ValueError("triangle must be a 2D array.")
+    row_amount, col_amount = triangle.shape
+
+    if weights is None:
+        weights = np.ones(row_amount, dtype=float)
+    else:
+        weights =  fix_num_array(
+            weights,
+            size=(row_amount,),
+            fill_with_last=fill_with_last,
+            fill_with_mean=fill_with_mean
+        )
+
+    if any(weight < 0 for weight in weights):
+        raise ValueError("Weights must be non-negative.")
+
+    for j in range(col_amount):
+        obs_rows = row_amount - j
+        if obs_rows <= 0:
+            continue
+        temp_weights = np.flip(weights[:obs_rows])
+        triangle[obs_rows:row_amount, j] = np.average(
+            triangle[:obs_rows, j],
+            weights=temp_weights
+        )
+
+    return triangle
+
+# This function returns the last observed cumulative for each occurrence period.
+# It assumes that the observed data are triangular. There is also another 
+# possible entry most_rec_index, which describes the final observed column index
+# in the last row.
+
+def latest_obs_cumul(
+    cumulative,
+    most_rec_index=0 
+):
+    cumulative = np.asarray(cumulative, dtype=float)
+    if cumulative.ndim != 2:
+        raise ValueError("cumulative must be a 2D array.")
+    row_amount, col_amount = cumulative.shape
+
+    latest_observed_cumulative = np.zeros(row_amount, dtype=float)
+    for i in range(row_amount):
+        temp_index = most_rec_index + row_amount - 1 - i
+        if temp_index >= col_amount - 1:
+            latest_observed_cumulative[i] = cumulative[i, -1]
+        else:
+            latest_observed_cumulative[i] = cumulative[i, temp_index]
+
+    return latest_observed_cumulative
+
+# This function returns the incremental reported data (without np.nan) given
+# a cumulative table of claims.
+
+def cumulative_to_incremental(
+    cumulative
+):
+    cumulative = np.asarray(cumulative, dtype=float)
+    if cumulative.ndim != 2:
+        raise ValueError("cumulative must be a 2D array.")
+    row_amount, col_amount = cumulative.shape
+
+    incremental = np.full_like(cumulative, np.nan)
+    incremental[:,0] = cumulative[:, 0]
+    for j in range(1, col_amount):
+        incremental[:, j] = cumulative[:, j] - cumulative[:, j - 1]
+
+    return incremental
+
+# This function produces the development factor of the chain-ladder method.
+# It can also take a weights parameters describing  the relative importance
+# of data with respect to *experience period*.
+
+def dev_factors(
+    triangle,
+    *,
+    weights = None,
+    fill_with_last = False,
+    fill_with_mean = False
+):
+    triangle = np.asarray(triangle, dtype=float, copy=True)
+    if triangle.ndim != 2:
+        raise ValueError("reported_incremental must be a 2D array.")
+    row_amount, col_amount = triangle.shape
+
+    if weights is None:
+        weights = np.ones(row_amount, dtype=float)
+    else:
+        weights =  fix_num_array(
+            weights,
+            size=(row_amount,),
+            fill_with_last=fill_with_last,
+            fill_with_mean=fill_with_mean
+        )
+
+    development_factors = np.ones(col_amount - 1, dtype=float)
+    for j in range(col_amount - 1):
+        obs_rows = row_amount - (j+1)
+
+        temp_weights = np.flip(weights[:obs_rows])
+        numerator = np.average(triangle[:obs_rows, j + 1], weights=temp_weights)
+        denominator = np.average(triangle[:obs_rows, j], weights=temp_weights)
+        if denominator <= 0:
+            raise ValueError(f"Development factor at column {j} cannot be estimated because the denominator is not positive.")
+        development_factors[j] = numerator / denominator
+
+    return development_factors
+
+# This function extrapolates the remaining entries of a triangular table 
+# with development factors.
+
+def apply_devf_triang(
+    triangle,
+    *,
+    development_factors
+):
+    triangle = np.asarray(triangle, dtype=float, copy=True)
+    if triangle.ndim != 2:
+        raise ValueError("triangle must be a 2D array.")
+    row_amount, col_amount = triangle.shape
+
+    development_factors = np.asarray(development_factors, dtype=float)
+    if development_factors.ndim != 1:
+        raise ValueError("development_factors must be a 1D array.")
+    if len(development_factors) != col_amount - 1:
+        raise ValueError(f"development_factors must have length {col_amount - 1}.")
+    if any(factor<=0 for factor in development_factors):
+        raise ValueError("Development factors must be positive.")
+
+    i_0 = np.maximum(0, row_amount-col_amount)
+    for i in range(i_0, row_amount):
+        last_obs_dev = col_amount - i - 1
+        if last_obs_dev < 0:
+            continue
+        for j in range(last_obs_dev + 1, col_amount):
+            triangle[i, j] = triangle[i, j - 1] * development_factors[j - 1]
+
+    return triangle
+
+# This function estimates total claim count with means.
+
+def est_ibnr_count_by_mean(
+    reported_incremental,
+    *,
+    details = False,
+    weights=None,
+    fill_with_last=False,
+    fill_with_mean=False
+):
+    reported_incremental = np.asarray(reported_incremental, dtype=float)
+    if reported_incremental.ndim != 2:
+        raise ValueError("reported_incremental must be a 2D array.")
+    row_amount, col_amount = reported_incremental.shape
+
+    cumulative = reported_incremental.cumsum(axis=1)
+
+    projected_incremental = apply_wgts_triang(
+        triangle=reported_incremental,
+        weights=weights,
+        fill_with_last=fill_with_last,
+        fill_with_mean=fill_with_mean
+    )
+
+    latest_observed_cumulative = latest_obs_cumul(cumulative)
+    projected_cumulative = projected_incremental.cumsum(axis=1)
+    ultimate_counts = projected_cumulative[:, -1]
+
+    if details:
+        remaining_estimated_ibnr = ultimate_counts - latest_observed_cumulative
+        projected_incremental = pd.DataFrame(projected_incremental)
+        projected_incremental["Total IBNR"] = remaining_estimated_ibnr
+        projected_incremental["Total"] = ultimate_counts
+
+        return projected_incremental
+
+    return ultimate_counts
+
+# This function estimates total claim count with the chain-ladder method.
+
+def est_ibnr_count_by_ladder(
+    reported_incremental,
+    *,
+    details = False,
+    weights = None,
+    fill_with_last = False,
+    fill_with_mean = False,
+):
+    reported_incremental = np.asarray(reported_incremental, dtype=float)
+    if reported_incremental.ndim != 2:
+        raise ValueError("reported_incremental must be a 2D array.")
+    row_amount, col_amount = reported_incremental.shape
+
+    extrapolation = np.zeros(row_amount, dtype=float)
+    cumulative = reported_incremental.cumsum(axis=1)
+
+    development_factors = dev_factors(
+        triangle=cumulative,
+        weights=weights,
+        fill_with_last=fill_with_last,
+        fill_with_mean=fill_with_mean
+    )
+
+    projected_cumulative = apply_devf_triang(
+        triangle=cumulative,
+        development_factors=development_factors
+    )
+    latest_observed_cumulative = latest_obs_cumul(cumulative)
+
+    projected_incremental = cumulative_to_incremental(projected_cumulative)
+    ultimate_counts = projected_cumulative[:, -1]
+
+    if details:
+        remaining_estimated_ibnr = ultimate_counts - latest_observed_cumulative
+        projected_incremental = pd.DataFrame(projected_incremental)
+        projected_incremental["Total IBNR"] = remaining_estimated_ibnr
+        projected_incremental["Total"] = ultimate_counts
+
+        return projected_incremental
+
+    return ultimate_counts
+
+# This function fixes a total reporting pattern into a relative probability 
+# reporting pattern. For example, if temp_rep_pattern=[0.5, 0.25, 0.125, 0.125],
+# then the output is [0.5, 0.5, 0.5, 1.].
+
+def rep_patt_trans(
+    temp_rep_pattern
+):
+    temp_rep_pattern = np.asarray(temp_rep_pattern, dtype=float)
+    if temp_rep_pattern.ndim != 1:
+        raise ValueError("temp_rep_pattern must be a 1D array.")
+    length = len(temp_rep_pattern)
+
+    rep_pattern = [temp_rep_pattern[0]]
+    prod = 1.0
+
+    for j in range(1, length - 1):
+        if np.isclose(rep_pattern[j - 1], 1.0):
+            continue
+        prod *= (1 - rep_pattern[j - 1])
+        ratio = temp_rep_pattern[j] / prod
+        rep_pattern.append(ratio)
+
+    rep_pattern = np.asarray(rep_pattern, dtype=float)
+    if np.isclose(rep_pattern.sum(), 0.0):
+        raise ValueError("It was not possible to fit a reporting pattern.")
+    
+    return rep_pattern             
+
+# This function receives a table with full data and provides the mean total
+# claim count, the std total claim count, a reporting pattern and a reporting
+# pattern spread. The point is using it with real data to generate parameter
+# with which a realistic Monte Carlo simulation can be run.
+
+def proc_real_data(
+  full_data  
+):
+    full_data = np.asarray(full_data, dtype=float)
+    if full_data.ndim != 2:
+        raise ValueError("full_data must be a 2D array.")
+    row_amount, col_amount = full_data.shape
+
+    real_claim_num = np.zeros(row_amount, dtype=float)
+    temp_rep_patterns = []
+
+    for i in range(row_amount):
+        real_claim_num[i] = full_data[i, :].sum()
+        temp_rep_pattern = []
+        for j in range(col_amount):
+            temp_rep_pattern.append(full_data[i, j] / real_claim_num[i])
+        temp_rep_pattern = rep_patt_trans(temp_rep_pattern)
+        temp_rep_pattern = fix_num_array(temp_rep_pattern, 
+                                         size=(col_amount - 1,), 
+                                         fill_with_last=True)
+        temp_rep_patterns.append(temp_rep_pattern)
+    
+    temp_rep_patterns = np.asarray(temp_rep_patterns, dtype=float)
+    rep_pattern = temp_rep_patterns.mean(axis=0)
+    rep_pattern_spread = temp_rep_patterns.std(axis=0) / rep_pattern
+    
+    return real_claim_num.mean(), real_claim_num.std(), rep_pattern, rep_pattern_spread
+
+# Standard Monte Carlo experiment. 
+
+def monte_carlo_ibnr_count_exp(
+    num_scenarios=10_000,
+    *,
+    ladder_method=True,
+    mean_method=True,
+    weight_kwargs=None,
+    occurrence_periods=10,
+    reporting_pattern=(0.6,),
+    reporting_pattern_spread=None,
+    lambda_sampler=lognormal_lambda_sampler,
+    sampler_kwargs=None,
+    seed=123
+):
+    weight_kwargs = weight_kwargs or {None: None}
+    sampler_kwargs = sampler_kwargs or {"mean": 6.3, "sigma": 0.1}
+    rng = np.random.default_rng(seed)
+
+    estimators = {}
+    if ladder_method:
+        for key in weight_kwargs:
+            if key is None:
+                estimators["ladder_equal"] = lambda tri: est_ibnr_count_by_ladder(tri)
+            else:
+                w = weight_kwargs[key]
+                estimators[f"ladder_{key}"] = lambda tri, w=w: est_ibnr_count_by_ladder(tri, weights=w)
+
+    if mean_method:
+        for key in weight_kwargs:
+            if key is None:
+                estimators["mean_equal"] = lambda tri: est_ibnr_count_by_mean(tri)
+            else:
+                w = weight_kwargs[key]
+                estimators[f"mean_{key}"] = lambda tri, w=w: est_ibnr_count_by_mean(tri, weights=w)
+
+    rows = []
+
+    for scenario in range(num_scenarios):
+        ultimate_counts, reported_incremental = reported_claims_model(
+            rng=rng,
+            occurrence_periods=occurrence_periods,
+            reporting_pattern=reporting_pattern,
+            reporting_pattern_spread=reporting_pattern_spread,
+            lambda_sampler=lambda_sampler,
+            sampler_kwargs=sampler_kwargs
+        )
+
+        observed_cumulative = np.nancumsum(reported_incremental, axis=1)
+        latest_observed = latest_obs_cumul(observed_cumulative)
+        true_ibnr = ultimate_counts - latest_observed
+
+        for method, estimator in estimators.items():
+            try:
+                est_ultimate = estimator(reported_incremental)
+                ibnr_error = (est_ultimate - latest_observed) - true_ibnr
+              
+                temp_dic = {
+                    "scenario": scenario,
+                    "method": method,
+                    "true_claim_avg": ultimate_counts.mean(),
+                    "est_claim_avg": est_ultimate.mean(),
+                    "true_ibnr_total": true_ibnr.sum(),
+                    "est_ibnr_total": (est_ultimate - latest_observed).sum(),
+                    "ibnr_error_total": ibnr_error.sum(),
+                }
+                for i in range(occurrence_periods):
+                    temp_dic[f"true_ibnr_{i}"] = true_ibnr[i]
+                    temp_dic[f"est_ibnr_{i}"] = (est_ultimate - latest_observed)[i]
+                    temp_dic[f"ibnr_error_{i}"] = ibnr_error[i]
+
+                rows.append(temp_dic)
+
+            except Exception:
+                temp_dic = {
+                    "scenario": scenario,
+                    "method": method,
+                    "true_claim_avg": ultimate_counts.mean(),
+                    "est_claim_avg": np.nan,
+                    "true_ibnr_total": true_ibnr.sum(),
+                    "est_ibnr_total": np.nan,
+                    "ibnr_error_total": np.nan,
+                }
+                for i in range(occurrence_periods):
+                    temp_dic[f"true_ibnr_{i}"] = true_ibnr[i]
+                    temp_dic[f"est_ibnr_{i}"] = np.nan
+                    temp_dic[f"ibnr_error_{i}"] = np.nan
+                
+                rows.append(temp_dic)
+
+    results = pd.DataFrame(rows)
+
+    summary = results.groupby("method", dropna=False).agg(
+        mean_true_ibnr_total=("true_ibnr_total", "mean"),
+        mean_est_ibnr_total=("est_ibnr_total", "mean"),
+        mean_total_bias=("ibnr_error_total", "mean"),
+        std_total_error=("ibnr_error_total", "std"),
+        failure_rate=("est_ibnr_total", lambda x: x.isna().mean())
+    ).reset_index()
+
+    return results, summary
